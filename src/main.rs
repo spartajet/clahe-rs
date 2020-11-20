@@ -8,8 +8,6 @@ fn main() {
     };
 
     let im = image::open(&Path::new(&file)).unwrap();
-    println!("{:?}", im.color());
-
     let output = clahe_rs::clahe(im.to_luma()).unwrap();
 
     output

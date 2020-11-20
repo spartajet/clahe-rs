@@ -1,3 +1,4 @@
+use std::cmp::min;
 use image::*;
 use imageproc::pixelops::interpolate;
 use imageproc::stats::{histogram, ChannelHistogram};
@@ -58,11 +59,33 @@ pub fn clahe(input: GrayImage) -> Result<GrayImage, Box<dyn std::error::Error>> 
             input.dimensions().0,
             input.dimensions().1,
         ) {
-            unimplemented!()
-            // TODO Find the weight based on distance of the input pixel from the tile centers
-            // Then perform linear interpolation
+            let tile_pixel0 =
+                lookup_tables[tiles.0.y as usize][tiles.0.x as usize][val.0[0] as usize];
+            let tile_pixel1 =
+                lookup_tables[tiles.1.y as usize][tiles.1.x as usize][val.0[0] as usize];
+            let weight = if tiles.0.x == tiles.1.x {
+                let tile_center0 = get_pixel_coordinate_from_tile_coordinate(tiles.0.x, tile_width);
+                (x as f32 - tile_center0 as f32) / tile_width as f32
+            } else if tiles.0.y == tiles.0.y {
+                let tile_center0 =
+                    get_pixel_coordinate_from_tile_coordinate(tiles.0.y, tile_height);
+                (y as f32 - tile_center0 as f32) / tile_height as f32
+            } else {
+                0.0
+            };
+
+            output.get_pixel_mut(x, y).0 = if weight > 0.0 {
+                interpolate(Luma::from([tile_pixel0]), Luma::from([tile_pixel1]), 1. - weight).0
+            } else {
+                interpolate(
+                    Luma::from([tile_pixel1]),
+                    Luma::from([tile_pixel0]),
+                    -weight,
+                )
+                .0
+            };
         } else {
-            let tiles = get_four_closest_tiles(
+            let tiles = get_neighbor_tiles(
                 x,
                 y,
                 tiles_hz,
@@ -70,7 +93,14 @@ pub fn clahe(input: GrayImage) -> Result<GrayImage, Box<dyn std::error::Error>> 
                 input.dimensions().0,
                 input.dimensions().1,
             )
-            .expect("Could not get 4 closest tiles...");
+            .unwrap();
+
+            let pixel_values = tiles.iter().map(|tile| lookup_tables[tile.y as usize][tile.x as usize][val.0[0] as usize]).collect::<Vec<u8>>();
+            let x_weight = (x - (tiles[0].x * tile_width + (tile_width / 2))) as f32 / tile_width as f32;
+            let y_weight = (y - (tiles[0].y * tile_height + (tile_height / 2))) as f32 / tile_height as f32;
+            let intermediate_1 = interpolate(Luma::from([pixel_values[0]]), Luma::from([pixel_values[1]]), 1.0 - x_weight);
+            let intermediate_2 = interpolate(Luma::from([pixel_values[3]]), Luma::from([pixel_values[2]]), 1.0 - x_weight);
+            output.get_pixel_mut(x, y).0 = interpolate::<Luma<u8>>(intermediate_1, intermediate_2, 1.0 - y_weight).0;
         }
     }
 
@@ -112,7 +142,7 @@ fn perform_gray_level_mapping(histogram: &ChannelHistogram, lookup_table: &mut V
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 struct TileCoordinate {
     pub x: u32,
     pub y: u32,
@@ -165,10 +195,59 @@ fn is_border_region(
     dim_x: u32,
     dim_y: u32,
 ) -> Result<(TileCoordinate, TileCoordinate), ()> {
-    Err(())
+    let tile_width = dim_x / tiles_hz;
+    let tile_height = dim_y / tiles_vt;
+
+    if y <= (tile_height / 2) {
+        // Top border
+        let left_x = min((x - (tile_width / 2)) / tile_width, tiles_hz - 2);
+        let right_x = left_x + 1;
+        Ok((
+            TileCoordinate { x: left_x, y: 0 },
+            TileCoordinate { x: right_x, y: 0 },
+        ))
+    } else if y > ((tiles_vt * tile_height) - (tile_height / 2)) {
+        // Bottom border
+        let left_x = min((x - (tile_width / 2)) / tile_width, tiles_hz - 2);
+        let right_x = left_x + 1;
+        Ok((
+            TileCoordinate {
+                x: left_x,
+                y: tiles_vt - 1,
+            },
+            TileCoordinate {
+                x: right_x,
+                y: tiles_vt - 1,
+            },
+        ))
+    } else if x <= (tile_width / 2) {
+        // Left border
+        let top_y = min((y - (tile_height / 2)) / tile_height, tiles_vt - 2);
+        let bottom_y = top_y + 1;
+        Ok((
+            TileCoordinate { x: 0, y: top_y },
+            TileCoordinate { x: 0, y: bottom_y },
+        ))
+    } else if x > ((tiles_hz * tile_width) - (tile_width / 2)) {
+        // Right border
+        let top_y = min((y - (tile_height / 2)) / tile_height, tiles_vt - 2);
+        let bottom_y = top_y + 1;
+        Ok((
+            TileCoordinate {
+                x: tiles_hz - 1,
+                y: top_y,
+            },
+            TileCoordinate {
+                x: tiles_hz - 1,
+                y: bottom_y,
+            },
+        ))
+    } else {
+        Err(())
+    }
 }
 
-fn get_four_closest_tiles(
+fn get_neighbor_tiles(
     x: u32,
     y: u32,
     tiles_hz: u32,
@@ -176,5 +255,34 @@ fn get_four_closest_tiles(
     dim_x: u32,
     dim_y: u32,
 ) -> Result<[TileCoordinate; 4], ()> {
-    Err(())
+    let tile_width = dim_x / tiles_hz;
+    let tile_height = dim_y / tiles_vt;
+
+    let left_x = min((x - (tile_width / 2)) / tile_width, tiles_hz - 2);
+    let right_x = left_x + 1;
+    let top_y = min((y - (tile_height / 2)) / tile_height, tiles_vt - 2);
+    let bottom_y = top_y + 1;
+
+    Ok([
+        TileCoordinate {
+            x: left_x,
+            y: top_y,
+        },
+        TileCoordinate {
+            x: right_x,
+            y: top_y,
+        },
+        TileCoordinate {
+            x: right_x,
+            y: bottom_y,
+        },
+        TileCoordinate {
+            x: left_x,
+            y: bottom_y,
+        },
+    ])
+}
+
+fn get_pixel_coordinate_from_tile_coordinate(tile_coord: u32, pixels_per_tile: u32) -> u32 {
+    (pixels_per_tile / 2) + (tile_coord * pixels_per_tile)
 }
