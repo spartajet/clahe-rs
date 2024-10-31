@@ -8,7 +8,7 @@ fn main() {
     };
 
     let im = image::open(&Path::new(&file)).unwrap();
-    let output = clahe_rs::clahe(im.to_luma()).unwrap();
+    let output = clahe_rs::clahe(im.to_luma8()).unwrap();
 
     output
         .save_with_format(&Path::new("output.png"), image::ImageFormat::Png)
